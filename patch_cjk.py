@@ -35,10 +35,13 @@ import os
 import re
 import shutil
 import sys
+import time
+import urllib.error
 import urllib.request
 import zipfile
 
-REPO_RELEASE_API = "https://api.github.com/repos/iBicha/playlet/releases/{release}"
+REPO_RELEASE_API = "https://api.github.com/repos/iBicha/playlet/releases/latest"
+REPO_RELEASE_TAG_API = "https://api.github.com/repos/iBicha/playlet/releases/tags/{tag}"
 FONT_VARIABLE_TTF = ("https://github.com/google/fonts/raw/main/ofl/notosanssc/"
                      "NotoSansSC%5Bwght%5D.ttf")
 
@@ -84,23 +87,40 @@ def fetch(url: str, dest: str) -> None:
         return
     print(f"download: {url}")
     req = urllib.request.Request(url, headers={"User-Agent": "playlet-cjk-patcher"})
-    with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as f:
-        shutil.copyfileobj(r, f)
+    data = _open_with_retries(req).read()
+    with open(dest, "wb") as f:
+        f.write(data)
+
+
+def _open_with_retries(req: urllib.request.Request, attempts: int = 4):
+    last = None
+    for n in range(attempts):
+        try:
+            return urllib.request.urlopen(req, timeout=120)
+        except urllib.error.HTTPError as e:
+            last = e
+            wait = 2 * (n + 1)
+            print(f"HTTP {e.code} from {req.full_url}, retrying in {wait}s ...")
+            time.sleep(wait)
+        except urllib.error.URLError as e:
+            last = e
+            time.sleep(2 * (n + 1))
+    sys.exit(f"failed after {attempts} attempts: {req.full_url} ({last})")
 
 
 def latest_release() -> str:
     import json
     req = urllib.request.Request(REPO_RELEASE_API.format(release="latest"),
                                  headers={"User-Agent": "playlet-cjk-patcher"})
-    with urllib.request.urlopen(req, timeout=60) as r:
+    with _open_with_retries(req) as r:
         return json.load(r)["tag_name"]
 
 
 def release_assets(tag: str) -> dict[str, str]:
     import json
-    req = urllib.request.Request(REPO_RELEASE_API.format(release=tag),
-                                 headers={"User-Agent": "playlet-cjk-patcher"})
-    with urllib.request.urlopen(req, timeout=60) as r:
+    url = REPO_RELEASE_TAG_API.format(tag=tag)
+    req = urllib.request.Request(url, headers={"User-Agent": "playlet-cjk-patcher"})
+    with _open_with_retries(req) as r:
         data = json.load(r)
     assets = {a["name"]: a["browser_download_url"] for a in data["assets"]}
     for needed in ("playlet.zip", "playlet-lib.zip"):
